@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.21)
+project(umm.cpp LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set(BUILD_SHARED_LIBS OFF)
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+option(UMM_BUILD_CLI "Build the command-line application" ON)
+if(NOT DEFINED UMM_DEPENDENCY_DIR)
+    set(UMM_DEPENDENCY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+endif()
+if(NOT DEFINED UMM_SESSION_DIR)
+    set(UMM_SESSION_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+# Both engines must see exactly the same ggml tensor ABI.
+add_compile_definitions(GGML_MAX_NAME=160)
+set(LLAMA_BUILD_COMMON OFF)
+set(LLAMA_BUILD_TESTS OFF)
+set(LLAMA_BUILD_TOOLS OFF)
+set(LLAMA_BUILD_EXAMPLES OFF)
+set(SD_BUILD_EXAMPLES OFF)
+set(SD_WEBP OFF)
+set(SD_WEBM OFF)
+set(SD_GGML_QUANT_EXTENSIONS OFF)
+
+add_subdirectory("${UMM_DEPENDENCY_DIR}/llama.cpp" third_party/llama.cpp)
+add_subdirectory("${UMM_DEPENDENCY_DIR}/stable-diffusion.cpp" third_party/stable-diffusion.cpp)
+target_include_directories(stable-diffusion PRIVATE "${UMM_DEPENDENCY_DIR}/llama.cpp")
+
+add_library(umm-text src/llama-engine.cpp)
+target_include_directories(umm-text PUBLIC src include PRIVATE "${UMM_DEPENDENCY_DIR}/llama.cpp/src")
+target_link_libraries(umm-text PUBLIC llama)
+
+add_library(umm "${UMM_SESSION_DIR}/src/session.cpp" src/prompts.cpp)
+target_include_directories(umm PUBLIC "${UMM_SESSION_DIR}/include")
+target_link_libraries(umm PRIVATE umm-text stable-diffusion)
+
+if(UMM_BUILD_CLI)
+    add_executable(umm-cli src/main.cpp)
+    target_link_libraries(umm-cli PRIVATE umm stable-diffusion)
+endif()
