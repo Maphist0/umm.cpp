@@ -1,5 +1,6 @@
 #include "umm/session.h"
 #include "llama-engine.h"
+#include "model-package.h"
 #include "prompts.h"
 #include "stable-diffusion.h"
 #include "ggml-backend.h"
@@ -46,10 +47,11 @@ struct session::impl {
     }
 };
 
-session::session(const std::string & understanding_gguf, const std::string & generation_model) {
+session::session(const std::string & model, const std::string & generation_model) {
+    const auto paths = resolve_model(model, generation_model);
     ggml_backend_load_all();
     llama_backend_init();
-    impl_ = std::make_unique<impl>(understanding_gguf, generation_model);
+    impl_ = std::make_unique<impl>(paths.understanding, paths.generation);
 }
 
 session::~session() = default;

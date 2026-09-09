@@ -88,39 +88,42 @@ builds need no local patches or additional reference-test dependencies.
 Download the official dense
 [SenseNova U1.5 checkpoint](https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT)
 and replace `/path/to/official-u1.5` below with its local directory. Install the
-converter's dependencies in your Python environment, then create an understanding
-GGUF for llama.cpp:
+converter's dependencies in your Python environment, then prepare one model package:
 
 ```sh
 python -m pip install -r third_party/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
-python third_party/llama.cpp/convert_hf_to_gguf.py /path/to/official-u1.5 \
-  --outtype bf16 --outfile /path/to/u1-understanding-bf16.gguf
+python scripts/convert-model.py /path/to/official-u1.5 --output /path/to/u1
 ```
 
-The image branch reads the original checkpoint directly and loads only its
-generation weights. The understanding GGUF needs approximately 19 GB of disk
-space, in addition to the original checkpoint and build files.
+The package contains `model.json`, `understanding.gguf`, and `generation.gguf`.
+The two GGUF files contain separate branch weights; generation weights are not
+duplicated in the understanding file. Tokenizer data is embedded in the
+understanding GGUF. The original checkpoint is no longer needed for inference;
+the converter leaves it untouched and refuses to overwrite an existing package.
+
+Understanding weights default to BF16; `--outtype f16`, `f32`, or `q8_0` changes
+their format. Generation weights retain their source dtype and values. Conversion
+requires space for the completed package alongside the original checkpoint.
+The dense U1.5 BF16 package is approximately 35 GB (decimal).
 
 ### Generate text
 
 ```sh
-build/bin/umm-cli --text-model /path/to/u1-understanding-bf16.gguf \
+build/bin/umm-cli --model /path/to/u1 \
   --mode text --prompt 'What is 2 + 3?'
 ```
 
 ### Generate an image
 
 ```sh
-build/bin/umm-cli --text-model /path/to/u1-understanding-bf16.gguf \
-  --image-model /path/to/official-u1.5 --mode image \
+build/bin/umm-cli --model /path/to/u1 --mode image \
   --prompt 'a red cube on a white background' --output cube.png
 ```
 
 ### Reason, then generate an image
 
 ```sh
-build/bin/umm-cli --text-model /path/to/u1-understanding-bf16.gguf \
-  --image-model /path/to/official-u1.5 --mode think-image \
+build/bin/umm-cli --model /path/to/u1 --mode think-image \
   --prompt 'Design a clear illustration of the water cycle.' --output water-cycle.png
 ```
 
@@ -137,8 +140,7 @@ Use the same session interface for text and image generation:
 ```cpp
 #include "umm/session.h"
 
-umm::session session("/path/to/u1-understanding-bf16.gguf",
-                     "/path/to/official-u1.5");
+umm::session session("/path/to/u1");
 
 auto text = session.text("What is 2 + 3?");
 
@@ -148,8 +150,7 @@ auto image = session.image("Design a clear illustration of the water cycle.", op
 // image.rgb contains RGB pixels; image.reasoning contains the preceding reasoning.
 ```
 
-The generation checkpoint is optional for text-only sessions. See
-[session.h](include/umm/session.h) for the public interface and defaults.
+See [session.h](include/umm/session.h) for the public interface and defaults.
 
 ## Documentation
 

@@ -33,7 +33,7 @@ add_library(umm-text src/llama-engine.cpp)
 target_include_directories(umm-text PUBLIC src include PRIVATE "${UMM_DEPENDENCY_DIR}/llama.cpp/src")
 target_link_libraries(umm-text PUBLIC llama)
 
-add_library(umm "${UMM_SESSION_DIR}/src/session.cpp" src/prompts.cpp)
+add_library(umm "${UMM_SESSION_DIR}/src/session.cpp" src/prompts.cpp src/model-package.cpp)
 target_include_directories(umm PUBLIC "${UMM_SESSION_DIR}/include")
 target_link_libraries(umm PRIVATE umm-text stable-diffusion)
 

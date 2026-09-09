@@ -16,8 +16,8 @@ int main(int argc, char ** argv) {
         for (int i = 1; i < argc; ++i) {
             const std::string key = argv[i];
             if (key == "--help") {
-                std::cout << "umm-cli --text-model MODEL.gguf --mode text|image|think-image --prompt TEXT\n"
-                             "        [--image-model CHECKPOINT] [--output image.png] [--max-tokens 256]\n"
+                std::cout << "umm-cli --model PACKAGE --mode text|image|think-image --prompt TEXT\n"
+                             "        [--output image.png] [--max-tokens 256]\n"
                              "        [--width 2048] [--height 2048] [--steps 50] [--cfg 4] [--shift 3] [--seed 42]\n";
                 return 0;
             }
@@ -25,15 +25,18 @@ int main(int argc, char ** argv) {
                 throw std::invalid_argument("Expected unique --option value pairs; use --help");
             }
         }
-        const std::vector<std::string> known = {"--text-model", "--image-model", "--mode", "--prompt",
+        const std::vector<std::string> known = {"--model", "--mode", "--prompt",
             "--output", "--max-tokens", "--width", "--height", "--steps", "--cfg", "--shift", "--seed"};
         for (const auto & entry : args) {
             if (std::find(known.begin(), known.end(), entry.first) == known.end()) {
                 throw std::invalid_argument("Unknown option: " + entry.first);
             }
         }
-        if (!args.count("--text-model") || !args.count("--prompt")) {
-            throw std::invalid_argument("--text-model and --prompt are required; use --help");
+        if (!args.count("--model") || !args.count("--prompt")) {
+            throw std::invalid_argument("--model and --prompt are required; use --help");
+        }
+        if (!std::filesystem::is_directory(args.at("--model"))) {
+            throw std::invalid_argument("--model must name a model package directory");
         }
         auto get = [&](const std::string & key, const std::string & fallback) {
             return args.count(key) ? args.at(key) : fallback;
@@ -42,7 +45,7 @@ int main(int argc, char ** argv) {
         if (mode != "text" && mode != "image" && mode != "think-image") {
             throw std::invalid_argument("Mode must be text, image, or think-image");
         }
-        umm::session session(args.at("--text-model"), get("--image-model", ""));
+        umm::session session(args.at("--model"));
         if (mode == "text") {
             std::cout << session.text(args.at("--prompt"), std::stoi(get("--max-tokens", "256"))) << '\n';
             return 0;
