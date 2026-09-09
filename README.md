@@ -12,6 +12,7 @@ Initial model support is the **SenseNova U1 series**, starting with the dense
 **SenseNova U1.5** checkpoint. **Support for additional models is on the way.**
 
 [Modular design](#modular-design) • [Supported models](#supported-models) •
+[Platform support](#platform-support) •
 [Quick start](#quick-start) • [C++ API](#c-api) • [Documentation](#documentation)
 
 ## Modular design
@@ -63,6 +64,24 @@ The current interface accepts text prompts and provides three output modes:
 Image input and conversation continuation after image output are not yet
 implemented. See the [runtime validation](docs/REFERENCE-CONTROLS.md) for the
 tested cases.
+
+## Platform support
+
+Validation status applies to dense SenseNova U1.5 inference in `umm.cpp`.
+Backend availability in the underlying engines does not imply validation here.
+
+| Platform / backend | Status | Validation scope |
+| --- | --- | --- |
+| Linux / NVIDIA CUDA | Validated on H100 | Text, image, and reasoning-then-image inference |
+| CPU-only | Not validated for inference | CPU build and CLI checks passed; full U1 inference has not been validated |
+| macOS / Metal | Not validated | No inference validation |
+| Vulkan | Not validated | No inference validation |
+| Windows / CUDA | Not validated | No inference validation |
+| Other platforms or backends | Not validated | No inference validation |
+
+The current CUDA configuration requests GPU execution for both branches. CPU
+handles supporting work such as tokenization and file I/O. Configurable CPU/GPU
+layer offloading and per-branch device placement are not exposed in `umm.cpp` yet.
 
 ## Quick start
 
