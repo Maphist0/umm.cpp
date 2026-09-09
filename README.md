@@ -15,6 +15,10 @@ Initial model support is the **SenseNova U1 series**, starting with the dense
 [Platform support](#platform-support) •
 [Quick start](#quick-start) • [C++ API](#c-api) • [Documentation](#documentation)
 
+## Updates
+- [x] Sep 9: Initial version is ready. It supports SenseNova U1 series model. It can do Text / Image / Text(reasoning)-then-Image generation.
+- [ ] BAGEL support.
+
 ## Modular design
 
 The core idea is to keep each branch's computation in its dedicated inference
