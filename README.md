@@ -29,7 +29,7 @@ engine and handle the interaction between branches in `umm.cpp`.
 
 SenseNova U1 and BAGEL both use a MoT structure that separates multimodal
 inference into a language side and an image side, but they package the bridge
-differently. 
+differently.
 - U1 transfers the
 understanding prefix's attention key/value (K/V) state from llama.cpp to sd.cpp.
 - BAGEL uses llama.cpp for text, reasoning, and vision-token sequencing, then uses

@@ -60,10 +60,8 @@ def main():
             if result.returncode:
                 raise SystemExit(f"{name}: patch does not apply cleanly:\n{result.stderr}")
             branch = git(repo, "branch", "--show-current").stdout.strip()
-            if branch != dependency["branch"]:
-                exists = git(repo, "show-ref", "--verify", "--quiet", "refs/heads/" + dependency["branch"], check=False)
-                switch_args = [dependency["branch"]] if exists.returncode == 0 else ["-c", dependency["branch"]]
-                git(repo, "switch", *switch_args)
+            if branch and branch != dependency["branch"]:
+                print(f"{name}: applying on current branch {branch}; revision is pinned")
             git(repo, "apply", str(patch))
             print(f"{name}: applied {patch.name}")
 
