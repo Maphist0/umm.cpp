@@ -6,14 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(BUILD_SHARED_LIBS OFF)
 set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
-option(UMM_BUILD_CLI "Build the command-line application" ON)
-if(NOT DEFINED UMM_DEPENDENCY_DIR)
-    set(UMM_DEPENDENCY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
-endif()
-if(NOT DEFINED UMM_SESSION_DIR)
-    set(UMM_SESSION_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
-endif()
 
+# Shared engine configuration -------------------------------------------------
 # Both engines must see exactly the same ggml tensor ABI.
 add_compile_definitions(GGML_MAX_NAME=160)
 set(LLAMA_BUILD_COMMON OFF)
@@ -25,19 +19,33 @@ set(SD_WEBP OFF)
 set(SD_WEBM OFF)
 set(SD_GGML_QUANT_EXTENSIONS OFF)
 
-add_subdirectory("${UMM_DEPENDENCY_DIR}/llama.cpp" third_party/llama.cpp)
-add_subdirectory("${UMM_DEPENDENCY_DIR}/stable-diffusion.cpp" third_party/stable-diffusion.cpp)
-target_include_directories(stable-diffusion PRIVATE "${UMM_DEPENDENCY_DIR}/llama.cpp")
+# Third-party engines ---------------------------------------------------------
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp" third_party/llama.cpp)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd" third_party/mtmd)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp" third_party/stable-diffusion.cpp)
+add_library(sd.cpp ALIAS stable-diffusion)
+target_include_directories(stable-diffusion PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp")
 
-add_library(umm-text src/llama-engine.cpp)
-target_include_directories(umm-text PUBLIC src include PRIVATE "${UMM_DEPENDENCY_DIR}/llama.cpp/src")
-target_link_libraries(umm-text PUBLIC llama)
+# UMM llama.cpp integration ---------------------------------------------------
+add_library(llama.cpp src/llama-cpp-adapter.cpp src/model-registry.cpp)
+target_include_directories(llama.cpp PUBLIC include PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/src")
+target_link_libraries(llama.cpp PUBLIC llama)
 
-add_library(umm "${UMM_SESSION_DIR}/src/session.cpp" src/prompts.cpp src/model-package.cpp)
-target_include_directories(umm PUBLIC "${UMM_SESSION_DIR}/include")
-target_link_libraries(umm PRIVATE umm-text stable-diffusion)
+# UMM runtime -----------------------------------------------------------------
+add_library(umm
+    src/session.cpp
+    src/diffusion-bridge.cpp
+    src/model-workflow.cpp
+    src/model-package.cpp
+    src/sd-cpp-adapter.cpp
+)
+target_include_directories(umm PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(umm PRIVATE llama.cpp sd.cpp)
+target_link_libraries(umm PRIVATE mtmd)
 
-if(UMM_BUILD_CLI)
-    add_executable(umm-cli src/main.cpp src/cli.cpp src/image-io.cpp)
-    target_link_libraries(umm-cli PRIVATE umm stable-diffusion)
-endif()
+# Command-line application ----------------------------------------------------
+add_executable(umm-cli src/main.cpp src/cli.cpp src/image-io.cpp)
+target_include_directories(umm-cli PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/stable-diffusion.cpp/thirdparty"
+)
+target_link_libraries(umm-cli PRIVATE umm)

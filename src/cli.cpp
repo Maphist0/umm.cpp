@@ -2,7 +2,7 @@
 
 #include "image-io.h"
 #include "json.hpp"
-#include "umm/session.h"
+#include "session.h"
 
 #include <algorithm>
 #include <filesystem>

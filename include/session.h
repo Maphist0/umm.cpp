@@ -1,5 +1,7 @@
 #pragma once
 
+#include "model-registry.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -7,11 +9,18 @@
 
 namespace umm {
 
+struct image_input {
+    int width;
+    int height;
+    std::vector<uint8_t> rgb;
+};
+
 struct image_options {
-    int width = 2048;
-    int height = 2048;
+    int width = 0;   // Zero selects the model default.
+    int height = 0;
     int steps = 50;
     float guidance = 4.0f;
+    float image_guidance = 1.5f;
     float flow_shift = 3.0f;
     int64_t seed = 42;
     bool think = false;
@@ -35,8 +44,12 @@ public:
     session(const session &) = delete;
     session & operator=(const session &) = delete;
 
+    bool supports(model_capability capability) const;
     std::string text(const std::string & prompt, int max_tokens = 256);
+    std::string understand(const image_input & image, const std::string & prompt,
+                           int max_tokens = 256, bool think = false);
     image_result image(const std::string & prompt, const image_options & options = {});
+    image_result edit(const image_input & image, const std::string & prompt, const image_options & options = {});
 
 private:
     struct impl;
