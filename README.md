@@ -13,8 +13,9 @@ unified command-line interface and C++ API.
 [Quick start](#quick-start) • [C++ API](#c-api)
 
 ## Updates
+- [ ] Performance measurement and NPU support
+- [x] Sep 10: add BAGEL support.
 - [x] Sep 9: Initial version is ready. It supports SenseNova U1 series model. It can do Text / Image / Text(reasoning)-then-Image generation.
-- [ ] BAGEL support.
 
 ## Modular design
 
