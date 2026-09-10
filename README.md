@@ -8,12 +8,9 @@ Unified multimodal inference in C++.
 runs the image branch, and `umm.cpp` coordinates their interaction behind a
 unified command-line interface and C++ API.
 
-Initial model support is the **SenseNova U1 series**, starting with the dense
-**SenseNova U1.5** checkpoint. **Support for additional models is on the way.**
-
 [Modular design](#modular-design) • [Supported models](#supported-models) •
 [Platform support](#platform-support) •
-[Quick start](#quick-start) • [C++ API](#c-api) • [Documentation](#documentation)
+[Quick start](#quick-start) • [C++ API](#c-api)
 
 ## Updates
 - [x] Sep 9: Initial version is ready. It supports SenseNova U1 series model. It can do Text / Image / Text(reasoning)-then-Image generation.
@@ -28,64 +25,62 @@ engine and handle the interaction between branches in `umm.cpp`.
 | --- | --- |
 | **llama.cpp** | Understanding-branch execution and autoregressive text generation |
 | **sd.cpp** | Image-generation branch execution, pixel-flow sampling, and image decoding |
-| **umm.cpp** | Model-specific prompt formatting, text/image phase sequencing, state transfer between branches, and a unified user interface |
+| **umm.cpp** (this repo) | Model-specific prompt formatting, text/image phase sequencing, state transfer between branches, and a unified user interface |
 
-For SenseNova U1's **MoT architecture**, the text and image branches belong to
-the same unified model. `umm.cpp` runs the understanding prefix and optional
-reasoning through llama.cpp, then transfers the prefix's attention key/value
-(K/V) state to sd.cpp to condition image generation.
+SenseNova U1 and BAGEL both use a MoT structure that separates multimodal
+inference into a language side and an image side, but they package the bridge
+differently. 
+- U1 transfers the
+understanding prefix's attention key/value (K/V) state from llama.cpp to sd.cpp.
+- BAGEL uses llama.cpp for text, reasoning, and vision-token sequencing, then uses
+sd.cpp for the diffusion branch with the BAGEL-specific latent/image handoff.
+- This repo, `umm.cpp`, owns that model-specific sequencing so the public CLI and C++ API stay
+consistent across models.
 
 ```mermaid
 flowchart LR
     P[Prompt] --> U["umm.cpp: unified CLI / C++ API"]
-    U --> L["llama.cpp: understanding and text"]
-    L --> T[Text]
-    L --> K["umm.cpp: prefix K/V handoff"]
-    K --> S["sd.cpp: image generation"]
+    X[Input image] --> U
+    U --> L["llama.cpp: text, reasoning, and understanding"]
+    L --> T[Text answer]
+    L --> H["umm.cpp: model-specific branch handoff"]
+    X --> H
+    H --> S["sd.cpp: image generation and editing"]
     S --> I[Image]
 ```
 
-This separation keeps model graphs and kernels in the engine that executes them.
-New model integrations can build on those engines while adding the required
-branch coordination to `umm.cpp`. Both engines run in one process and share ggml;
-each engine executes its own forward pass independently.
+The design has three practical properties:
+
+- Each engine owns the model graphs and kernels it executes.
+- New model integrations reuse the shared layers and add their own prompt
+  grammar, package components, and branch handoff rules.
+- Both engines run in one process and share ggml, while each executes its own
+  forward pass independently.
 
 ## Supported models
 
 | Model family | Current support |
 | --- | --- |
 | [SenseNova U1 series](https://github.com/OpenSenseNova/SenseNova-U1) | Initial model family; the current implementation and validation cover the dense SenseNova U1.5 checkpoint |
-| Additional model families | Planned; support is on the way |
+| [BAGEL-7B-MoT](https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT) | Experimental implementation in the development working tree; conversion, CPU handoff tests, graph construction, and a small vision forward pass checked. Full inference and image quality are not yet validated. |
+| Additional model families | Planned; Hunyuan Image is a likely next target |
 
-The current interface accepts text prompts and provides three output modes:
+The interface provides these modes:
 
 | Mode | Output |
 | --- | --- |
 | `text` | Autoregressive text |
 | `image` | An image conditioned on the prompt |
 | `think-image` | Reasoning followed by an image |
-
-Image input and conversation continuation after image output are not yet
-implemented. See the [runtime validation](docs/REFERENCE-CONTROLS.md) for the
-tested cases.
+| `understand`, `think-understand` | Answer a question about an input image |
+| `edit`, `think-edit` | Edit an input image, optionally with reasoning |
 
 ## Platform support
 
-Validation status applies to dense SenseNova U1.5 inference in `umm.cpp`.
-Backend availability in the underlying engines does not imply validation here.
-
-| Platform / backend | Status | Validation scope |
-| --- | --- | --- |
-| Linux / NVIDIA CUDA | Validated on H100 | Text, image, and reasoning-then-image inference |
-| CPU-only | Not validated for inference | CPU build and CLI checks passed; full U1 inference has not been validated |
-| macOS / Metal | Not validated | No inference validation |
-| Vulkan | Not validated | No inference validation |
-| Windows / CUDA | Not validated | No inference validation |
-| Other platforms or backends | Not validated | No inference validation |
-
-The current CUDA configuration requests GPU execution for both branches. CPU
-handles supporting work such as tokenization and file I/O. Configurable CPU/GPU
-layer offloading and per-branch device placement are not exposed in `umm.cpp` yet.
+Validation in this repository has been performed only on Linux with NVIDIA
+CUDA. The current CUDA configuration runs both model branches on the GPU; CPU
+handles supporting work such as tokenization and file I/O. Support for other
+platforms and backends is future work.
 
 ## Quick start
 
@@ -98,36 +93,49 @@ From the repository root, initialize the pinned engines and build:
 
 ```sh
 git submodule update --init third_party/llama.cpp third_party/stable-diffusion.cpp
+python scripts/apply-patches.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DSD_CUDA=ON
 cmake --build build -j 8
 ```
 
-For a CPU build, omit the CUDA options. The project currently uses integration
-forks of both engines, pinned in [dependencies.json](dependencies.json). Normal
-builds need no local patches or additional reference-test dependencies.
+### Prepare a model package
 
-### Prepare the model
+`convert-model.py` accepts an official U1.5 or BAGEL checkpoint and creates the
+self-contained directory consumed by `umm-cli`.
 
-Download the official dense
-[SenseNova U1.5 checkpoint](https://huggingface.co/sensenova/SenseNova-U1.5-8B-MoT)
-and replace `/path/to/official-u1.5` below with its local directory. Install the
-converter's dependencies in your Python environment, then prepare one model package:
+Install the converter dependencies once:
 
 ```sh
 python -m pip install -r third_party/llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
-python scripts/convert-model.py /path/to/official-u1.5 --output /path/to/u1
 ```
 
-The package contains `model.json`, `understanding.gguf`, and `generation.gguf`.
-The two GGUF files contain separate branch weights; generation weights are not
-duplicated in the understanding file. Tokenizer data is embedded in the
-understanding GGUF. The original checkpoint is no longer needed for inference;
-the converter leaves it untouched and refuses to overwrite an existing package.
+Convert a checkpoint with:
 
-Understanding weights default to BF16; `--outtype f16`, `f32`, or `q8_0` changes
-their format. Generation weights retain their source dtype and values. Conversion
-requires space for the completed package alongside the original checkpoint.
-The dense U1.5 BF16 package is approximately 35 GB (decimal).
+```sh
+# SenseNova U1.5
+python scripts/convert-model.py /path/to/official-u1.5 --output /path/to/u1
+
+# BAGEL-7B-MoT
+python scripts/convert-model.py /path/to/BAGEL-7B-MoT --output /path/to/bagel
+```
+
+The resulting package contains a `model.json` manifest and model-family-specific
+components:
+
+- U1: `understanding.gguf` and `generation.gguf`. The generation file also
+  carries U1's native understanding vision encoder.
+- BAGEL: `understanding.gguf`, `generation.gguf`, `vision.gguf`, and
+  `vae.safetensors`.
+
+Other package rules:
+
+- Understanding weights default to BF16; use `--outtype f16`, `f32`, or `q8_0`
+  to change that component's format.
+- Generation weights retain their source dtype and values.
+- Tokenizer data is embedded in `understanding.gguf`.
+- The converter leaves the source checkpoint untouched, refuses to overwrite an
+  existing output directory, and needs enough free space for the completed
+  package beside the source checkpoint.
 
 ### Generate text
 
@@ -156,12 +164,21 @@ settings, reasoning, and tokens. Defaults are 2048 × 2048, 50 Euler steps, guid
 `--shift`, and `--seed` to adjust them; dimensions must be divisible by 32.
 Run `build/bin/umm-cli --help` for all options.
 
+Model-specific defaults:
+
+- U1 image generation defaults to 2048 × 2048, with dimensions divisible by 32.
+- BAGEL image generation defaults to 1024 × 1024, with dimensions divisible by 16
+  and a maximum size of 1024 × 1024.
+- For editing, omitting `--width` and `--height` preserves the prepared input
+  dimensions. BAGEL also supports `--image-cfg`, which defaults to 1.5.
+- All models use the same `umm-cli` modes and command format.
+
 ## C++ API
 
 Use the same session interface for text and image generation:
 
 ```cpp
-#include "umm/session.h"
+#include "session.h"
 
 umm::session session("/path/to/u1");
 
@@ -173,15 +190,4 @@ auto image = session.image("Design a clear illustration of the water cycle.", op
 // image.rgb contains RGB pixels; image.reasoning contains the preceding reasoning.
 ```
 
-See [session.h](include/umm/session.h) for the public interface and defaults.
-
-## Documentation
-
-- [Development guide](docs/DEVELOPMENT.md): source layout, cache handoff, shared
-  ggml build, dependency updates, and numerical behavior.
-- [Runtime validation](docs/REFERENCE-CONTROLS.md): normal inference and reference
-  comparison results.
-- [Reference tests](tests/reference/README.md): isolated builds for exact
-  comparisons with recorded official outputs.
-- [Integration commits](patches/README.md): changes carried by the engine forks.
-- [Implementation plan](docs/PLAN.md): development milestones and design history.
+See [session.h](include/session.h) for the public interface and defaults.
