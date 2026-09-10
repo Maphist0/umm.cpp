@@ -38,6 +38,6 @@ target_include_directories(umm PUBLIC "${UMM_SESSION_DIR}/include")
 target_link_libraries(umm PRIVATE umm-text stable-diffusion)
 
 if(UMM_BUILD_CLI)
-    add_executable(umm-cli src/main.cpp)
+    add_executable(umm-cli src/main.cpp src/cli.cpp src/image-io.cpp)
     target_link_libraries(umm-cli PRIVATE umm stable-diffusion)
 endif()
