@@ -142,9 +142,10 @@ Other package rules:
 
 - Understanding weights default to BF16; use `--outtype f16`, `f32`, or `q8_0`
   to change that component's format.
-- Generation weights retain their source dtype and values. Use
-  `--generation-outtype f16` or `--generation-outtype f32` to convert BF16
-  generation weights when required by the target backend.
+- Generation weights retain their source dtype and values. For Ascend 310P, use
+  `--outtype f16 --generation-outtype f32` when converting because its CANN
+  MatMul path does not support BF16 weights. Other backends can preserve the
+  source precision.
 - Tokenizer data is embedded in `understanding.gguf`.
 - The converter leaves the source checkpoint untouched, refuses to overwrite an
   existing output directory, and needs enough free space for the completed
