@@ -21,9 +21,14 @@ using option_map = std::map<std::string, std::string>;
 
 void print_help() {
     std::cout
-        << "umm-cli --model PACKAGE --mode text|image|think-image --prompt TEXT\n"
-           "        [--output image.png] [--max-tokens 256]\n"
-           "        [--width 2048] [--height 2048] [--steps 50] [--cfg 4] [--shift 3] [--seed 42]\n";
+        << "umm-cli --model PACKAGE --mode MODE --prompt TEXT\n"
+           "        MODE: text|image|think-image|understand|think-understand|edit|think-edit\n"
+           "        [--input image.png] [--output image.png] [--max-tokens 256]\n"
+           "        [--understanding-backend CANN0] [--vision-backend CANN0]\n"
+           "        [--generation-backend 'diffusion=CANN1&CANN2,vae=CANN0']\n"
+           "        [--generation-max-vram CANN0=12,CANN1=38]\n"
+           "        [--width MODEL_DEFAULT] [--height MODEL_DEFAULT] [--steps 50]\n"
+           "        [--cfg 4] [--image-cfg 1.5] [--shift 3] [--seed 42]\n";
 }
 
 option_map parse_arguments(int argc, char ** argv) {
@@ -41,8 +46,9 @@ option_map parse_arguments(int argc, char ** argv) {
     }
 
     const std::vector<std::string> known = {
-        "--model", "--mode", "--prompt", "--output", "--max-tokens",
-        "--width", "--height", "--steps", "--cfg", "--shift", "--seed",
+        "--model", "--mode", "--prompt", "--input", "--output", "--max-tokens",
+        "--width", "--height", "--steps", "--cfg", "--image-cfg", "--shift", "--seed",
+        "--understanding-backend", "--vision-backend", "--generation-backend", "--generation-max-vram",
     };
     for (const auto & entry : args) {
         if (std::find(known.begin(), known.end(), entry.first) == known.end()) {
@@ -78,6 +84,7 @@ void write_metadata(const std::filesystem::path & output,
         {"height", options.height},
         {"steps", options.steps},
         {"guidance", options.guidance},
+        {"image_guidance", options.image_guidance},
         {"flow_shift", options.flow_shift},
         {"seed", options.seed},
         {"reasoning", image.reasoning},
@@ -107,21 +114,54 @@ int run(int argc, char ** argv) {
     }
 
     const auto mode = value(args, "--mode", "text");
-    if (mode != "text" && mode != "image" && mode != "think-image") {
-        throw std::invalid_argument("Mode must be text, image, or think-image");
-    }
+    const std::vector<std::string> modes = {
+        "text", "image", "think-image", "understand", "think-understand", "edit", "think-edit",
+    };
+    if (std::find(modes.begin(), modes.end(), mode) == modes.end())
+        throw std::invalid_argument("Unsupported mode: " + mode);
 
-    umm::session session(model);
+    umm::session session(model, "", value(args, "--understanding-backend"),
+                         value(args, "--generation-backend"), value(args, "--generation-max-vram"),
+                         value(args, "--vision-backend"));
     if (mode == "text") {
         std::cout << session.text(prompt, std::stoi(value(args, "--max-tokens", "256"))) << '\n';
         return 0;
     }
 
+    const bool understanding = mode == "understand" || mode == "think-understand";
+    const bool editing = mode == "edit" || mode == "think-edit";
+    if (understanding || editing) {
+        const auto input = read_image(required(args, "--input"));
+        if (understanding) {
+            std::cout << session.understand(input, prompt,
+                std::stoi(value(args, "--max-tokens", "256")), mode == "think-understand") << '\n';
+            return 0;
+        }
+
+        umm::image_options options;
+        options.width = std::stoi(value(args, "--width", "0"));
+        options.height = std::stoi(value(args, "--height", "0"));
+        options.steps = std::stoi(value(args, "--steps", "50"));
+        options.guidance = std::stof(value(args, "--cfg", "4"));
+        options.image_guidance = std::stof(value(args, "--image-cfg", "1.5"));
+        options.flow_shift = std::stof(value(args, "--shift", "3"));
+        options.seed = std::stoll(value(args, "--seed", "42"));
+        options.think = mode == "think-edit";
+        options.max_think_tokens = std::stoi(value(args, "--max-tokens", "1024"));
+        const auto image = session.edit(input, prompt, options);
+        const auto output = std::filesystem::path(value(args, "--output", "image.png"));
+        write_png(output, image);
+        write_metadata(output, mode, prompt, options, image);
+        std::cout << image.reasoning << '\n' << output << '\n';
+        return 0;
+    }
+
     umm::image_options options;
-    options.width = std::stoi(value(args, "--width", "2048"));
-    options.height = std::stoi(value(args, "--height", "2048"));
+    options.width = std::stoi(value(args, "--width", "0"));
+    options.height = std::stoi(value(args, "--height", "0"));
     options.steps = std::stoi(value(args, "--steps", "50"));
     options.guidance = std::stof(value(args, "--cfg", "4"));
+    options.image_guidance = std::stof(value(args, "--image-cfg", "1.5"));
     options.flow_shift = std::stof(value(args, "--shift", "3"));
     options.seed = std::stoll(value(args, "--seed", "42"));
     options.think = mode == "think-image";

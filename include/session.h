@@ -39,7 +39,12 @@ struct image_result {
 class session {
 public:
     // Accept a model package directory, or an understanding GGUF and optional generation checkpoint.
-    session(const std::string & model, const std::string & generation_model = "");
+    session(const std::string & model,
+            const std::string & generation_model = "",
+            const std::string & understanding_backend = "",
+            const std::string & generation_backend = "",
+            const std::string & generation_max_vram = "",
+            const std::string & vision_backend = "");
     ~session();
     session(const session &) = delete;
     session & operator=(const session &) = delete;

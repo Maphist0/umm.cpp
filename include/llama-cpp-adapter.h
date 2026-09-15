@@ -4,6 +4,7 @@
 #include "llama.h"
 #include "ggml-backend.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@ namespace umm {
 struct prefix_view {
     std::unique_ptr<ggml_context, decltype(&ggml_free)> descriptors{nullptr, ggml_free};
     std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> storage{nullptr, ggml_backend_buffer_free};
+    std::unique_ptr<ggml_context, decltype(&ggml_free)> host_descriptors{nullptr, ggml_free};
+    std::unique_ptr<ggml_backend_buffer, decltype(&ggml_backend_buffer_free)> host_buffer{nullptr, ggml_backend_buffer_free};
     std::vector<ggml_tensor *> keys;
     std::vector<ggml_tensor *> values;
 };
@@ -24,7 +27,7 @@ struct prefix_view {
 class llama_cpp_adapter {
 public:
     explicit llama_cpp_adapter(const std::string & model_path, int context_size = 0, int gpu_layers = 99,
-                          bool full_precision = false);
+                               bool full_precision = false, const std::string & backend = "");
     std::vector<llama_token> tokenize(const std::string & text) const;
     std::string piece(llama_token token) const;
     bool is_end(llama_token token) const;

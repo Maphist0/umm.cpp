@@ -8,12 +8,18 @@
 #include "stable-diffusion.h"
 #include "sd-cpp-adapter.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <utility>
 
 namespace umm {
 
 namespace {
+
+void log_stable_diffusion(enum sd_log_level_t, const char * message, void *) {
+    std::fputs(message, stderr);
+}
 
 void validate_edit_dimensions(const image_options & options) {
     const bool width_set = options.width != 0;
@@ -26,6 +32,42 @@ void validate_edit_dimensions(const image_options & options) {
 bool has_image_prefix_data(const sd_kv_prefix_t & prefix) {
     return prefix.token_ids && prefix.token_count &&
            prefix.keys && prefix.values && prefix.layer_count;
+}
+
+prefix_view stage_prefix_to_host(const std::vector<ggml_tensor *> & keys,
+                                 const std::vector<ggml_tensor *> & values) {
+    if (keys.empty() || keys.size() != values.size()) {
+        throw std::invalid_argument("Invalid prefix tensors");
+    }
+    prefix_view result;
+    result.descriptors.reset(ggml_init({2*keys.size()*ggml_tensor_overhead(), nullptr, true}));
+    if (!result.descriptors) {
+        throw std::runtime_error("Could not allocate prefix staging descriptors");
+    }
+    result.keys.reserve(keys.size());
+    result.values.reserve(values.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (!keys[i] || !values[i] || !keys[i]->buffer || !values[i]->buffer ||
+            !ggml_is_contiguous(keys[i]) || !ggml_is_contiguous(values[i])) {
+            throw std::runtime_error("External prefix tensors must be contiguous backend tensors");
+        }
+        result.keys.push_back(ggml_dup_tensor(result.descriptors.get(), keys[i]));
+        result.values.push_back(ggml_dup_tensor(result.descriptors.get(), values[i]));
+    }
+    result.storage.reset(ggml_backend_alloc_ctx_tensors_from_buft(
+        result.descriptors.get(), ggml_backend_cpu_buffer_type()));
+    if (!result.storage) {
+        throw std::runtime_error("Could not allocate prefix staging buffer");
+    }
+    for (size_t i = 0; i < keys.size(); ++i) {
+        for (const auto pair : {std::pair{keys[i], result.keys[i]},
+                                std::pair{values[i], result.values[i]}}) {
+            std::vector<uint8_t> bytes(ggml_nbytes(pair.first));
+            ggml_backend_tensor_get(pair.first, bytes.data(), 0, bytes.size());
+            ggml_backend_tensor_set(pair.second, bytes.data(), 0, bytes.size());
+        }
+    }
+    return result;
 }
 
 std::vector<llama_pos> image_prefix_positions(const sd_kv_prefix_t & prefix) {
@@ -50,12 +92,17 @@ struct session::impl {
     llama_cpp_adapter language_model;
     std::unique_ptr<model_workflow> workflow;
     std::string generation_model;
+    std::string generation_backend;
+    std::string generation_max_vram;
+    std::string vision_backend;
     std::string vae_model;
     std::string sd_vision_model;
     std::unique_ptr<sd_cpp_adapter> sd_vision_adapter;
     std::unique_ptr<sd_ctx_t, decltype(&free_sd_ctx)> image_engine{nullptr, free_sd_ctx};
 
-    explicit impl(model_package package_);
+    impl(model_package package_, const std::string & understanding_backend,
+         const std::string & generation_backend_, const std::string & generation_max_vram_,
+         const std::string & vision_backend_);
 
     void load_image_engine();
     void append_image(const image_input & image);
@@ -69,11 +116,16 @@ struct session::impl {
 
 // Model setup ---------------------------------------------------------------
 
-session::impl::impl(model_package package_)
+session::impl::impl(model_package package_, const std::string & understanding_backend,
+                    const std::string & generation_backend_, const std::string & generation_max_vram_,
+                    const std::string & vision_backend_)
     : package(std::move(package_)),
-      language_model(package.component("understanding"), 0, 99),
+      language_model(package.component("understanding"), 0, 99, false, understanding_backend),
       workflow(create_model_workflow(language_model.family())),
       generation_model(package.component("generation")),
+      generation_backend(generation_backend_),
+      generation_max_vram(generation_max_vram_),
+      vision_backend(vision_backend_),
       vae_model(package.component("vae")),
       sd_vision_model(package.component("vision")) {
     if (package.family != model_family::unknown && package.family != language_model.family()) {
@@ -100,7 +152,15 @@ void session::impl::load_image_engine() {
     params.vae_path = vae_model.empty() ? nullptr : vae_model.c_str();
     params.n_threads = 8;
     params.enable_mmap = true;
-    params.flash_attn = params.diffusion_flash_attn = true;
+    const bool multi_device = generation_backend.find('&') != std::string::npos;
+    const bool cann = generation_backend.find("CANN") != std::string::npos ||
+                      generation_backend.find("cann") != std::string::npos;
+    const bool disable_flash = cann || std::getenv("UMM_DISABLE_FLASH_ATTN") != nullptr;
+    params.flash_attn = params.diffusion_flash_attn = !disable_flash;
+    params.backend = generation_backend.empty() ? nullptr : generation_backend.c_str();
+    params.params_backend = generation_backend.empty() || multi_device ? nullptr : generation_backend.c_str();
+    params.split_mode = multi_device ? "layer" : nullptr;
+    params.max_vram = generation_max_vram.empty() ? nullptr : generation_max_vram.c_str();
     params.external_kv_prefix = true;
 
     if (language_model.family() == model_family::bagel) {
@@ -139,7 +199,7 @@ void session::impl::append_vision_image(const image_input & image) {
         throw std::runtime_error("Image understanding requires a model package with vision weights");
     }
     if (!sd_vision_adapter) {
-        sd_vision_adapter = create_sd_cpp_adapter(language_model.family(), sd_vision_model);
+        sd_vision_adapter = create_sd_cpp_adapter(language_model.family(), sd_vision_model, vision_backend);
     }
     language_model.append_bagel_image_embeddings(sd_vision_adapter->encode(image));
 }
@@ -171,10 +231,13 @@ void session::impl::append_latent_image(const image_input & image, int64_t seed)
 
 void session::impl::import_image_prefix(const sd_kv_prefix_t & prefix) {
     const auto positions = image_prefix_positions(prefix);
+    const std::vector<ggml_tensor *> keys(prefix.keys, prefix.keys + prefix.layer_count);
+    const std::vector<ggml_tensor *> values(prefix.values, prefix.values + prefix.layer_count);
+    auto staged = stage_prefix_to_host(keys, values);
     language_model.import_prefix({prefix.token_ids, prefix.token_ids + prefix.token_count},
                               positions,
-                              {prefix.keys, prefix.keys + prefix.layer_count},
-                              {prefix.values, prefix.values + prefix.layer_count});
+                              staged.keys,
+                              staged.values);
 }
 
 workflow_context session::impl::workflow_context_for_request() {
@@ -193,11 +256,18 @@ workflow_context session::impl::workflow_context_for_request() {
 
 // Public session API --------------------------------------------------------
 
-session::session(const std::string & model, const std::string & generation_model) {
+session::session(const std::string & model,
+                 const std::string & generation_model,
+                 const std::string & understanding_backend,
+                 const std::string & generation_backend,
+                 const std::string & generation_max_vram,
+                 const std::string & vision_backend) {
     auto package = resolve_model(model, generation_model);
     ggml_backend_load_all();
     llama_backend_init();
-    impl_ = std::make_unique<impl>(std::move(package));
+    sd_set_log_callback(log_stable_diffusion, nullptr);
+    impl_ = std::make_unique<impl>(std::move(package), understanding_backend, generation_backend,
+                                  generation_max_vram, vision_backend);
 }
 
 session::~session() = default;
