@@ -13,7 +13,7 @@
 
 当前分支已经补齐显式后端选择、310P CANN 兼容修改、跨设备 KV staging、BAGEL layer split 边界和 CFG 空前缀处理。F16 模型包已完成 text、image、think-image、understand、think-understand、edit、think-edit 七种 CLI 模式的严格 NPU 验证。双卡 diffusion 强制切分和三路编辑 CFG 也已通过。
 
-尚未完成的性能/质量扩展项是 512/1024 分辨率、50 steps 和官方 PyTorch/CUDA 同参数对照；它们不影响当前 256 分辨率全流程可运行的结论。
+尚未完成的质量扩展项是 50 steps 和官方 PyTorch/CUDA 同参数对照；它们不影响当前全流程可运行的结论。
 
 ### 1.1 2026-09-15 实测结果
 
@@ -49,6 +49,39 @@
 2. Runner 构造阶段直接读取两个视觉边界 token 的 embedding，与 layer-split 延迟装载冲突。现在在执行图内用 `GET_ROWS` 从 NPU 权重提取，支持延迟装载和多卡分配。
 3. BAGEL 的 without-text 前缀可以合法地包含 0 个 token。旧逻辑把对应的空 `SDCondition` 当作条件不存在，跳过 CFG 分支，最终报 `Diffusion model sampling failed`。现在以 external KV slot 的 active 状态判断分支是否存在。
 
+### 1.2 2026-09-17 单卡 Q8 + F16 验证
+
+为让两个模型分支同时常驻一张 44 GiB 310P3，本轮使用
+`models/BAGEL-7B-MoT-Q8U-F16G-UMM`：understanding 为完整 Q8_0（约
+7.54 GiB），generation 为 F16（约 13 GiB），vision 约 846 MiB，VAE
+约 320 MiB。运行期间没有卸载 understanding、generation、vision 或 VAE。
+
+310P 原有 `WeightQuantBatchMatmulV2` 路径会把 F32 activation 转成 F16，
+并输出 F16。BAGEL diffusion 的 28 层会反复让两个边界 token 经过共享的
+Q8 understanding expert，误差逐步累积后会把图像破坏为彩色噪声。修复后，
+该特定的 `Q8_0 × F32`、双 token 路径在 NPU 上把当前矩阵展开到临时 F16
+缓冲，再用常规 `Mm` 保留 F32 activation 和输出；Q8 权重仍常驻，临时缓冲
+最大约 130 MiB，并由内存池复用。普通单 token 文本解码仍使用原量化矩阵乘。
+
+同时把 BAGEL 的 `n_ctx/n_batch/n_ubatch` 调整为 `8192/512/256`，LLM
+计算缓冲由约 15 GiB 降到约 247 MiB。8192 context 仍可覆盖 BAGEL 视觉
+编码最多约 4900 token 的输入。
+
+单卡严格加速器模式的结果如下：
+
+| 场景 | 结果 |
+| --- | --- |
+| 256×256，8 steps，CFG 4 | 成功，图像语义正常；sampling 25.31 s，VAE 0.62 s |
+| 1024×1024，8 steps，CFG 4，不分块 VAE | diffusion 完成，VAE 申请约 6657 MiB 计算缓冲时 OOM |
+| 1024×1024，8 steps，CFG 4，64×64 latent tile、0.5 overlap | 成功，3×3 共 9 tiles，无可见接缝；sampling 206.69 s，VAE 13.76 s，总生成 220.48 s |
+
+1024 采样阶段观测到进程占用约 38.0 GiB，整卡占用约 39.2 GiB；VAE 分块
+把解码计算缓冲降至约 1664 MiB，低于 sampling 的约 1938 MiB。代表输出是
+`outputs/bagel-vae-tiled-1024.png`，SHA256 为
+`8fe46376b020ca3bb5ec832eca80d6e4e094c149a43cc454af4be9d50f109c95`。
+整个运行设置 `GGML_SCHED_STRICT_ACCEL=1`，所有神经网络图均由同一张 NPU
+执行；CPU 仍执行分词、调度、随机数、CFG/Euler 宿主逻辑和 PNG 编码。
+
 ## 2. 当前 BAGEL 接入范围
 
 umm.cpp 当前主线已经包含：
@@ -60,7 +93,8 @@ umm.cpp 当前主线已经包含：
 - stable-diffusion.cpp 子仓库：实现 BAGEL generation expert、共享 understanding 权重、外部 KV conditioning、三路 CFG、图像 latent prefix 和 Flux VAE；
 - llama.cpp 子仓库：实现 BAGEL understanding GGUF 转换及 BAGEL 视觉 projector。
 
-README 对 BAGEL 的状态仍标记为实验性：转换、CPU handoff、图构建和小型视觉 forward 已检查，但完整推理和图像质量没有验证。平台说明仍是仅在 CUDA 上验证。
+README 已更新为当前验证状态：F16 包覆盖七种 CLI 模式，Q8 understanding +
+F16 generation 已完成 Ascend 310P 单卡文生图和 1024×1024 图像质量验证。
 
 ## 3. 官方模型与权重规模
 
@@ -99,7 +133,8 @@ README 对 BAGEL 的状态仍标记为实验性：转换、CPU handoff、图构�
 
 - `MUL_MAT` 不接受 BF16；
 - `GET_ROWS` 不接受 BF16；
-- Q4/Q8 矩阵乘不支持；
+- Q4 矩阵乘尚未接入；Q8_0 已为连续权重接入 310P，并为 BAGEL 的双 token
+  F32 路径增加保精度实现；
 - F16 和 F32 是可用路径。
 
 所以不能使用当前转换器的默认 BAGEL 输出。初次转换应使用：
@@ -181,7 +216,10 @@ CANN 声明支持其主要卷积展开、matmul、group norm、nearest upscale�
 - upscale 的轴比例限制；
 - 1024 解码工作区 OOM。
 
-stable-diffusion.cpp 支持按模块指定后端，因此可以把 VAE 放在单独设备，并在需要时启用 VAE tiling。
+stable-diffusion.cpp 支持按模块指定后端，也支持 VAE tiling。实测 1024×1024
+整图解码会因约 6657 MiB 计算缓冲 OOM；64×64 latent tile、0.5 overlap 将
+缓冲降至约 1664 MiB，并在同一张 NPU 上成功完成解码，因此单卡布局需要保留
+VAE 分块。
 
 ## 5. 推荐设备布局
 
