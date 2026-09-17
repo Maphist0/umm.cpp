@@ -15,9 +15,19 @@ namespace umm {
 // Model/context setup -------------------------------------------------------
 
 llama_cpp_adapter::llama_cpp_adapter(const std::string & model_path, int context_size, int gpu_layers,
-                         bool full_precision) {
+                                     bool full_precision, const std::string & backend) {
     auto mp = llama_model_default_params();
     mp.n_gpu_layers = gpu_layers;
+    ggml_backend_dev_t devices[2]{};
+    if (!backend.empty()) {
+        devices[0] = ggml_backend_dev_by_name(backend.c_str());
+        if (!devices[0]) {
+            throw std::runtime_error("Understanding backend was not found: " + backend);
+        }
+        mp.devices = devices;
+        mp.split_mode = LLAMA_SPLIT_MODE_NONE;
+        mp.main_gpu = 0;
+    }
     overrides_[0].tag = LLAMA_KV_OVERRIDE_TYPE_BOOL;
     std::strcpy(overrides_[0].key, "sensenova_u1.full_precision");
     overrides_[0].val_bool = full_precision;
@@ -47,7 +57,8 @@ llama_cpp_adapter::llama_cpp_adapter(const std::string & model_path, int context
     cp.n_seq_max = 1;
     cp.n_threads = 8;
     cp.n_threads_batch = 8;
-    cp.flash_attn_type = full_precision ? LLAMA_FLASH_ATTN_TYPE_DISABLED : LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    const bool cann = backend.rfind("CANN", 0) == 0 || backend.rfind("cann", 0) == 0;
+    cp.flash_attn_type = full_precision || cann ? LLAMA_FLASH_ATTN_TYPE_DISABLED : LLAMA_FLASH_ATTN_TYPE_ENABLED;
     const auto cache_type = llama_model_ftype(model_.get()) == LLAMA_FTYPE_MOSTLY_BF16 ? GGML_TYPE_BF16 : GGML_TYPE_F16;
     cp.type_k = cp.type_v = full_precision ? GGML_TYPE_F32 : cache_type;
     context_.reset(llama_init_from_model(model_.get(), cp));
@@ -314,7 +325,7 @@ prefix_view llama_cpp_adapter::prefix() const {
     }
     const auto layers = cache->get_layer_ids();
     prefix_view result;
-    const size_t max_nodes = 4*layers.size() + 4;
+    const size_t max_nodes = 6*layers.size() + 4;
     result.descriptors.reset(ggml_init({ggml_tensor_overhead()*max_nodes + ggml_graph_overhead_custom(max_nodes, false), nullptr, true}));
     if (!result.descriptors) {
         throw std::runtime_error("Could not allocate prefix descriptors");
@@ -367,6 +378,24 @@ prefix_view llama_cpp_adapter::prefix() const {
             throw std::runtime_error("Could not pack prefix values");
         }
         ggml_backend_synchronize(backend.get());
+    }
+
+    const auto device_keys = std::move(result.keys);
+    const auto device_values = std::move(result.values);
+    result.host_storage.reserve(2*layers.size());
+    result.keys.reserve(layers.size());
+    result.values.reserve(layers.size());
+    auto stage_to_host = [&](ggml_tensor * source) {
+        auto * host = ggml_dup_tensor(result.descriptors.get(), source);
+        result.host_storage.emplace_back(ggml_nbytes(source));
+        auto & bytes = result.host_storage.back();
+        ggml_backend_tensor_get(source, bytes.data(), 0, bytes.size());
+        host->data = bytes.data();
+        return host;
+    };
+    for (size_t i = 0; i < layers.size(); ++i) {
+        result.keys.push_back(stage_to_host(device_keys[i]));
+        result.values.push_back(stage_to_host(device_values[i]));
     }
     return result;
 }
