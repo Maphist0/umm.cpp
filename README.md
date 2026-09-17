@@ -78,10 +78,10 @@ The interface provides these modes:
 
 ## Platform support
 
-Validation in this repository has been performed only on Linux with NVIDIA
-CUDA. The current CUDA configuration runs both model branches on the GPU; CPU
-handles supporting work such as tokenization and file I/O. Support for other
-platforms and backends is future work.
+Validation in this repository covers Linux with NVIDIA CUDA and Ascend CANN.
+SenseNova U1.5 has been tested on two Ascend 310P3 devices with CANN 8.5.0 at
+2048 x 2048 for 50 Euler steps. All model graph operations run on the NPUs;
+CPU handles supporting work such as tokenization, file I/O, and PNG encoding.
 
 ## Quick start
 
@@ -97,6 +97,16 @@ git submodule update --init third_party/llama.cpp third_party/stable-diffusion.c
 python scripts/apply-patches.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON -DSD_CUDA=ON
 cmake --build build -j 8
+```
+
+For Ascend 310P, build the supplied CANN image and compile with both engines
+using the CANN backend:
+
+```sh
+docker build -f docker/Dockerfile.cann-mvp -t umm-cann:8.5.0-mvp docker
+cmake -S . -B build-cann -DCMAKE_BUILD_TYPE=Release \
+  -DGGML_CANN=ON -DSOC_TYPE=Ascend310P3
+cmake --build build-cann -j 8
 ```
 
 ### Prepare a model package
@@ -132,7 +142,9 @@ Other package rules:
 
 - Understanding weights default to BF16; use `--outtype f16`, `f32`, or `q8_0`
   to change that component's format.
-- Generation weights retain their source dtype and values.
+- Generation weights retain their source dtype and values. Use
+  `--generation-outtype f16` or `--generation-outtype f32` to convert BF16
+  generation weights when required by the target backend.
 - Tokenizer data is embedded in `understanding.gguf`.
 - The converter leaves the source checkpoint untouched, refuses to overwrite an
   existing output directory, and needs enough free space for the completed
@@ -150,6 +162,16 @@ build/bin/umm-cli --model /path/to/u1 \
 ```sh
 build/bin/umm-cli --model /path/to/u1 --mode image \
   --prompt 'a red cube on a white background' --output cube.png
+```
+
+On two Ascend 310P devices, select the understanding and generation backends
+and give the layer splitter per-device memory limits:
+
+```sh
+build-cann/bin/umm-cli --model /path/to/u1 --mode image \
+  --prompt 'a red cube on a white background' --output cube.png \
+  --understanding-backend CANN0 --generation-backend 'CANN0&CANN1' \
+  --generation-max-vram 'CANN0=12,CANN1=38'
 ```
 
 ### Reason, then generate an image
