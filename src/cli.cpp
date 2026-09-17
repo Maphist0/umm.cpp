@@ -23,8 +23,8 @@ void print_help() {
     std::cout
         << "umm-cli --model PACKAGE --mode text|image|think-image --prompt TEXT\n"
            "        [--output image.png] [--max-tokens 256]\n"
-           "        [--understanding-backend CANN0] [--generation-backend CANN0&CANN1]\n"
-           "        [--generation-max-vram CANN0=12,CANN1=38]\n"
+           "        [--understanding-backend CANN0] [--generation-backend CANN0]\n"
+           "        [--generation-max-vram CANN0=40]\n"
            "        [--width 2048] [--height 2048] [--steps 50] [--cfg 4] [--shift 3] [--seed 42]\n";
 }
 
